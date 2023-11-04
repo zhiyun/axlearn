@@ -32,7 +32,13 @@ class TransformerTextEmbeddings(BaseLayer):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self._add_child("token_emb", cfg.token_emb.set(dim=cfg.dim, num_embeddings=cfg.vocab_size))
+        token_emb_cfg = cfg.token_emb.set(dim=cfg.dim)
+        if cfg.token_emb.num_embeddings is REQUIRED:
+            token_emb_cfg = cfg.token_emb.set(dim=cfg.dim, num_embeddings=cfg.vocab_size)
+        else:
+            # todo(zhiyunlu): what is an appropriate vocab_size for this case??
+            token_emb_cfg = cfg.token_emb.set(dim=cfg.dim)
+        self._add_child("token_emb", token_emb_cfg)
         if cfg.type_emb is not None:
             self._add_child("type_emb", cfg.type_emb.set(dim=cfg.dim))
         if cfg.pos_emb is not None:
