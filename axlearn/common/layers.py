@@ -1181,9 +1181,7 @@ class Embedding(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures Embedding."""
 
-        # Maximum number of embeddings in table.
-        # Multiple embedding tables if num_embeddings is a list.
-        num_embeddings: Required[Union[int, List[int]]] = REQUIRED
+        num_embeddings: Required[int] = REQUIRED  # Maximum number of embeddings in table.
         dim: Required[int] = REQUIRED  # Embedding vector dimensionality.
 
     @classmethod
@@ -1211,24 +1209,15 @@ class Embedding(BaseLayer):
 
     def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
         cfg = self.config
-        if isinstance(cfg.num_embeddings, int):
-            return dict(
-                weight=ParameterSpec(
-                    shape=[cfg.num_embeddings, cfg.dim],
-                    mesh_axes=cfg.param_partition_spec,
-                )
+        return dict(
+            weight=ParameterSpec(
+                shape=[cfg.num_embeddings, cfg.dim],
+                mesh_axes=cfg.param_partition_spec,
             )
-        else:
-            weights = {}
-            for i, num_embeddings in enumerate(cfg.num_embeddings):
-                weights[f"emb{i}_weight"] = ParameterSpec(
-                    shape=[num_embeddings, cfg.dim],
-                    mesh_axes=cfg.param_partition_spec,
-                )
-            return weights
+        )
 
     def forward(self, x: Tensor) -> Tensor:
-        emb = self.embeddings()
+        emb = self.parameters["weight"]
         return emb[x]
 
     def attend(self, x: Tensor) -> Tensor:
@@ -1240,19 +1229,11 @@ class Embedding(BaseLayer):
         Returns:
             Result of batched inner product of 'x' and embedding weight.
         """
-        return jnp.einsum("bld,nd->bln", x, self.embeddings())
+        return jnp.einsum("bld,nd->bln", x, self.parameters["weight"])
 
     def embeddings(self) -> Tensor:
-        """Returns weights of shape [num_embeddings, dim] or [sum(num_embeddings), dim]."""
-        cfg = self.config
-        if isinstance(cfg.num_embeddings, int):
-            emb = self.parameters["weight"]
-        else:
-            emb = jnp.concatenate(
-                [self.parameters[f"emb{i}_weight"] for i in range(len(cfg.num_embeddings))], axis=0
-            )
-            emb = with_sharding_constraint(emb, PartitionSpec(*cfg.param_partition_spec))
-        return emb
+        """Returns weights of shape [num_embeddings, dim]."""
+        return self.parameters["weight"]
 
 
 class BaseClassificationMetric(BaseLayer):

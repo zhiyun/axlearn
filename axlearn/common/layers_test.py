@@ -20,8 +20,6 @@ import torch
 from absl.testing import absltest, parameterized
 from jax import nn
 from jax import numpy as jnp
-from jax.experimental import mesh_utils
-from jax.experimental.pjit import pjit
 from sklearn.metrics import precision_score as sklearn_precision_score
 from sklearn.metrics import recall_score as sklearn_recall_score
 
@@ -66,13 +64,13 @@ from axlearn.common.layers import (
     set_layer_norm_eps_recursively,
     set_norm_recursively,
 )
-from axlearn.common.module import Module, OutputCollection, Tensor, child_context
+from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import ConstantInitializer, FanAxes
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
-from axlearn.common.utils import PartitionSpec, as_tensor, flatten_items, shapes
+from axlearn.common.utils import as_tensor, flatten_items, shapes
 
 
 def _copy(src: jnp.ndarray, dst: torch.nn.Parameter):
@@ -1869,30 +1867,17 @@ class EmbedTest(parameterized.TestCase):
         state = emb.initialize_parameters_recursively(rng)
         return (emb, state)
 
-    @parameterized.parameters(
-        itertools.product((5, 7), (2, 16), (10, 100, [10, 20]), (True, False))
-    )
+    @parameterized.parameters(itertools.product((5, 7), (2, 16), (10, 100), (True, False)))
     def test_embed_lookup(self, seq_len, dim, num_embeddings, is_training):
         rng = jax.random.PRNGKey(1)
         embedder, state = EmbedTest.build_embedder(dim, num_embeddings, rng)
-        ixs = jax.random.randint(
-            rng,
-            minval=0,
-            maxval=sum(num_embeddings) if isinstance(num_embeddings, list) else num_embeddings,
-            shape=(3, seq_len),
-        )
+        ixs = jax.random.randint(rng, minval=0, maxval=num_embeddings, shape=(3, seq_len))
         actual_embeds, _ = module.functional(
             embedder, rng, state=state, inputs=[ixs], is_training=is_training
         )
-        if isinstance(num_embeddings, int):
-            np.testing.assert_array_equal(state["weight"][ixs], actual_embeds)
-        else:
-            weights = jnp.concatenate([state["emb0_weight"], state["emb1_weight"]], axis=0)
-            np.testing.assert_array_equal(weights[ixs], actual_embeds)
+        np.testing.assert_array_equal(state["weight"][ixs], actual_embeds)
 
-    @parameterized.parameters(
-        itertools.product((5, 7), (2, 16), (10, 100, [10, 50]), (True, False))
-    )
+    @parameterized.parameters(itertools.product((5, 7), (2, 16), (10, 100), (True, False)))
     def test_embed_attend(self, seq_len, dim, num_embeddings, is_training):
         rng = jax.random.PRNGKey(1)
         embedder, state = EmbedTest.build_embedder(dim, num_embeddings, rng)
@@ -1900,35 +1885,7 @@ class EmbedTest(parameterized.TestCase):
         actual_attends = module.functional(
             embedder, rng, state=state, inputs=[x], is_training=is_training, method="attend"
         )[0]
-        if isinstance(num_embeddings, int):
-            assert_allclose(jnp.dot(x, state["weight"].T), actual_attends)
-        else:
-            weights = jnp.concatenate([state["emb0_weight"], state["emb1_weight"]], axis=0)
-            assert_allclose(jnp.dot(x, weights.T), actual_attends)
-
-    def test_multiple_embeds_sharding(self):
-        cfg = Embedding.default_config().set(dim=8, num_embeddings=[2, 3], name="embed")
-        emb = cfg.instantiate(parent=None)
-        param_specs = emb.create_parameter_specs_recursively()
-
-        with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
-            params = emb.initialize_parameters_recursively(jax.random.PRNGKey(1))
-            jax.debug.inspect_array_sharding(param_specs, callback=print)
-
-            input_partition_specs = jax.tree_map(
-                lambda spec: spec.mesh_axes,
-                param_specs,
-            )
-            output_partition_specs = PartitionSpec(None, "model")
-            concat_emb, _ = pjit(
-                partial(module.functional, emb, is_training=True, method="embeddings"),
-                in_shardings=(PartitionSpec(), input_partition_specs, PartitionSpec()),
-                out_shardings=(
-                    output_partition_specs,
-                    OutputCollection(summaries=None, state_updates=None, module_outputs=None),
-                ),
-            )(jax.random.PRNGKey(123), params, [])
-            jax.debug.inspect_array_sharding(concat_emb, callback=print)
+        assert_allclose(jnp.dot(x, state["weight"].T), actual_attends)
 
 
 class BiasLayer(BaseLayer):
