@@ -128,6 +128,7 @@ dataflow = [
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
     "orjson==3.8.7",  # 3.8.8 fails: https://github.com/ijl/orjson/issues/365
+    "tensorflow-datasets==4.7.0",
 ]
 
 [tool.flit.module]
