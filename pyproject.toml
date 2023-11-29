@@ -29,7 +29,7 @@ dependencies = [
     "tensorflow-datasets==4.7.0",
     "tensorflow-io[tensorflow]; platform_machine == 'x86_64'",
     "tensorflow-io-gcs-filesystem[tensorflow]; platform_machine == 'x86_64'",
-    "tensorflow_text,  # implied by seqio, but also used directly for text processing
+    "tensorflow_text",  # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions>=4.2.0",  # needed for typing.Protocol
