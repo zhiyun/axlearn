@@ -29,7 +29,7 @@ dependencies = [
     "tensorflow-datasets==4.7.0",
     "tensorflow-io[tensorflow]; platform_machine == 'x86_64'",
     "tensorflow-io-gcs-filesystem[tensorflow]; platform_machine == 'x86_64'",
-    "tensorflow_text==2.8.2",  # implied by seqio, but also used directly for text processing
+    "tensorflow_text,  # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.21",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions>=4.2.0",  # needed for typing.Protocol
@@ -83,12 +83,12 @@ dev = [
 gcp = [
     "cloud-tpu-client",  # for creating and managing TPUs.
     "crcmod",  # for file uploads.
-    "google-api-python-client==1.8.0",
+    "google-api-python-client",
     "google-auth==2.23.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
-    "google-cloud-storage==2.2.1",
-    "google-cloud-core==2.3.3",
+    "google-cloud-storage",
+    "google-cloud-core",
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
@@ -124,11 +124,10 @@ vertexai_tensorboard = [
 ]
 # Dataflow dependencies.
 dataflow = [
-    "apache-beam==2.49.0",
+    "apache-beam==2.52.0",
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
-    "orjson==3.8.7",  # 3.8.8 fails: https://github.com/ijl/orjson/issues/365
-    "tensorflow-datasets==4.7.0",
+    "orjson",  # 3.8.8 fails: https://github.com/ijl/orjson/issues/365
 ]
 
 [tool.flit.module]
