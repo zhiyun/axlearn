@@ -43,7 +43,7 @@ def build(
     labels = labels or {}
 
     # Build command.
-    cli_args = ["docker", "build", "-t", image, "-f", dockerfile, "--platform", "linux/amd64"]
+    cli_args = ["docker", "build", "-t", image, "-f", dockerfile]
     for k, v in args.items():
         cli_args.extend(["--build-arg", f"{k.strip().upper()}={v.strip()}"])
     for k, v in labels.items():

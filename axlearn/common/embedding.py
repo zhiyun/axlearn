@@ -32,10 +32,7 @@ class TransformerTextEmbeddings(BaseLayer):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if cfg.token_emb.klass == Embedding:
-            self._add_child("token_emb", cfg.token_emb.set(dim=cfg.dim, num_embeddings=cfg.vocab_size))
-        else:
-            self._add_child("token_emb", cfg.token_emb.set(dim=cfg.dim))
+        self._add_child("token_emb", cfg.token_emb.set(dim=cfg.dim, num_embeddings=cfg.vocab_size))
         if cfg.type_emb is not None:
             self._add_child("type_emb", cfg.type_emb.set(dim=cfg.dim))
         if cfg.pos_emb is not None:
