@@ -83,7 +83,7 @@ dev = [
 gcp = [
     "cloud-tpu-client",  # for creating and managing TPUs.
     "crcmod",  # for file uploads.
-    "google-api-python-client==1.8.0",
+    "google-api-python-client",
     "google-auth==2.23.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
