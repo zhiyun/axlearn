@@ -400,13 +400,12 @@ class CTCDecoderModel(BaseModel):
         paddings = input_batch["paddings"]
         # [batch_size, num_frames, vocab_size].
         logits = self.predict(input_batch)
-        # [batch_size, num_frames, vocab_size].
-        log_probs = jax.nn.log_softmax(logits, axis=-1)
-        log_probs += paddings[..., None] * NEG_INF
-
         # [batch, 1, num_frames].
         sequences = jnp.argmax(logits, axis=-1)[:, None, :]
 
+        # [batch_size, num_frames, vocab_size].
+        log_probs = jax.nn.log_softmax(logits, axis=-1)
+        log_probs += paddings[..., None] * NEG_INF
         # [batch, num_frames, 1].
         scores = jnp.take_along_axis(log_probs, sequences[:, 0, :, None], axis=-1)
         # [batch, 1].

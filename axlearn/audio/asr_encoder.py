@@ -44,6 +44,7 @@ class SpeechFeatureLayer(BaseLayer):
         self._add_child(
             "subsampler",
             cfg.subsampler.set(
+                # input_dim=cfg.frontend.output_dim, ### this is only True for lingvo frontend.
                 output_dim=cfg.output_dim,
             ),
         )
@@ -74,17 +75,14 @@ class SpeechFeatureLayer(BaseLayer):
                 [batch_size, subsampled_frames, subsampled_freq, output_dim].
             - paddings: A 0/1 Tensor of shape [batch_size, subsampled_frames].
         """
+        cfg = self.config
         # Compute frontend features.
         features = self.frontend(inputs=inputs, paddings=paddings)
         x = features["outputs"]
 
-        if "augmenter" in self.children:
-            if len(features["outputs"].shape) == 3:
-                x = x[..., None]
+        if cfg.augmenter is not None:
             # Apply augmentation.
             x = self.augmenter(inputs=x, paddings=features["paddings"])
-            if len(features["outputs"].shape) == 3:
-                x = jnp.squeeze(x, axis=-1)
 
         # Apply subsampling.
         # [batch_size, subsampled_frames, subsampled_freq, output_dim].
