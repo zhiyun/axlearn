@@ -31,7 +31,7 @@ class SpeechFeatureLayer(BaseLayer):
         # Converts raw waveforms to features.
         frontend: BaseLayer.Config = LogMelFrontend.default_config()
         # Applies feature augmentation. Should not affect the shape of inputs.
-        augmenter: BaseLayer.Config = SpectrumAugmenter.default_config()
+        augmenter: Optional[BaseLayer.Config] = SpectrumAugmenter.default_config()
         # Applies feature subsampling.
         subsampler: BaseLayer.Config = ConvSubSampler.default_config()
 
@@ -39,11 +39,11 @@ class SpeechFeatureLayer(BaseLayer):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._add_child("frontend", cfg.frontend)
-        self._add_child("augmenter", cfg.augmenter)
+        if cfg.augmenter is not None:
+            self._add_child("augmenter", cfg.augmenter)
         self._add_child(
             "subsampler",
             cfg.subsampler.set(
-                input_dim=cfg.frontend.output_dim,
                 output_dim=cfg.output_dim,
             ),
         )
@@ -78,8 +78,13 @@ class SpeechFeatureLayer(BaseLayer):
         features = self.frontend(inputs=inputs, paddings=paddings)
         x = features["outputs"]
 
-        # Apply augmentation.
-        x = self.augmenter(inputs=x, paddings=features["paddings"])
+        if "augmenter" in self.children:
+            if len(features["outputs"].shape) == 3:
+                x = x[..., None]
+            # Apply augmentation.
+            x = self.augmenter(inputs=x, paddings=features["paddings"])
+            if len(features["outputs"].shape) == 3:
+                x = jnp.squeeze(x, axis=-1)
 
         # Apply subsampling.
         # [batch_size, subsampled_frames, subsampled_freq, output_dim].
