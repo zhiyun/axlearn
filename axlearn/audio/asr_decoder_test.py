@@ -4,29 +4,34 @@
 # pylint: disable=no-self-use,too-many-lines
 
 import functools
+from typing import Tuple
 
 import jax.random
 import numpy as np
 import optax
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 from axlearn.audio.asr_decoder import (
     CTCDecoderModel,
     CTCPrefixMerger,
     DecodeOutputs,
+    TransducerDecoderModel,
     _is_valid_ctc_seq,
     _map_label_sequences,
+    _remove_blank_tokens,
 )
 from axlearn.common.config import config_for_function
 from axlearn.common.decoder import _scores_from_logits
 from axlearn.common.decoding import NEG_INF
 from axlearn.common.logit_modifiers import top_k_logits
+from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
+from axlearn.common.rnn import BaseRNNCell, IdentityCell
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import Nested, Tensor, shapes
+from axlearn.common.utils import Nested, NestedTensor, Tensor, shapes
 
 
 class UtilsTest(TestCase):
@@ -88,6 +93,37 @@ class UtilsTest(TestCase):
         self.assertNestedEqual(
             expected,
             jit_fn(inputs, blank_id=blank_id, pad_id=pad_id),
+        )
+
+    @parameterized.parameters(0, 1, 3)
+    def test_remove_blank_token(self, blank_id):
+        batch_size, num_decodes, max_decode_len, vocab_size = 8, 4, 20, 16
+        key1, key2 = jax.random.split(jax.random.PRNGKey(456), num=2)
+        inputs = jax.random.randint(
+            key1, [batch_size, num_decodes, max_decode_len], minval=0, maxval=vocab_size
+        )
+        seq_len = jax.random.randint(
+            key2, [batch_size, num_decodes], minval=0, maxval=max_decode_len + 1
+        )
+        paddings = jnp.arange(max_decode_len)[None, None, :] >= seq_len[:, :, None]
+        # [batch_size, max_seq_len].
+        inputs = inputs * (1 - paddings)
+
+        expected_outputs = np.zeros_like(inputs)
+        expected_paddings = np.zeros_like(inputs)
+        for i in range(batch_size):
+            for j in range(num_decodes):
+                pos = 0
+                for k in range(seq_len[i, j]):
+                    if inputs[i, j, k] != blank_id:
+                        expected_outputs[i, j, pos] = inputs[i, j, k]
+                        pos += 1
+                expected_paddings[i, j, pos:] = 1
+
+        jit_fn = jax.jit(_remove_blank_tokens, static_argnames=("blank_id",))
+        self.assertNestedEqual(
+            dict(sequences=expected_outputs, paddings=expected_paddings),
+            jit_fn(inputs, paddings=paddings, blank_id=blank_id),
         )
 
 
@@ -836,3 +872,186 @@ class CTCDecoderModelTest(TestCase):
             ),
         )
         self.assertNestedEqual(outputs.scores, jnp.array([[28, 28], [36, 36]]))
+
+
+class SimpleRecurrentCell(BaseRNNCell):
+
+    Config = BaseRNNCell.Config
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if cfg.output_dim and cfg.output_dim != cfg.input_dim:
+            raise ValueError(
+                (
+                    "SimpleRecurrentCell requires input_dim = output_dim, but got "
+                    f"input_dim = {cfg.input_dim}, output_dim = {cfg.output_dim}."
+                )
+            )
+
+    def init_step_states(self, *, batch_size: int) -> NestedTensor:
+        """Returns the initial step states, to be used by `extend_step`."""
+        cfg = self.config
+        return {
+            "step": jnp.zeros((batch_size, 1)),
+            "memory": jnp.zeros((batch_size, cfg.input_dim)),
+        }
+
+    def extend_step(
+        self, *, inputs: Tensor, step_states: NestedTensor
+    ) -> Tuple[NestedTensor, Tensor]:
+        # [batch*beam, emb_dim].
+        memory_init = inputs
+        # Markov chain transition probability.
+        transition = jnp.array([[0.5, 0, 0, 0.5], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        neg_inf = -1.0e7
+        memory_prob = jnp.exp(step_states["memory"]) @ transition
+        memory_update = jnp.where(memory_prob > 0, jnp.log(memory_prob), neg_inf)
+        memory_new = jnp.where(step_states["step"] > 0, memory_update, memory_init)
+        new_states = dict(step=step_states["step"] + 1, memory=memory_new)
+        return new_states, memory_new
+
+    def _batch_size(self, inputs: NestedTensor) -> int:
+        assert isinstance(inputs, Tensor)
+        assert inputs.ndim == 3, inputs.shape
+        return inputs.shape[1]
+
+    def _seq_len(self, inputs: NestedTensor) -> int:
+        assert isinstance(inputs, Tensor)
+        assert inputs.ndim == 3, inputs.shape
+        return inputs.shape[0]
+
+
+class TransducerDecoderModelTest(TestCase):
+    def _set_up_transducer(
+        self,
+        rng_seed=123,
+        cell_type=None,
+        blank_logit_bias=None,
+    ):
+        """Helper function to set up transducer."""
+        am_dim, emb_dim, rnn_hidden_dim, lm_dim, joint_dim, vocab_size = 8, 16, 15, 12, 12, 20
+
+        if (rnn_hidden_dim and cell_type) or (not rnn_hidden_dim and not cell_type):
+            raise ValueError("Exactly one of rnn_hidden_dim and cell_type should be set.")
+        cfg = TransducerDecoderModel.default_config().set(
+            name="transducer_decoder",
+            dim=am_dim,
+            lm_dim=lm_dim,
+            joint_dim=joint_dim,
+            vocab_size=vocab_size,
+        )
+        if cell_type is not None:
+            cfg.transducer.activation_fn = "linear"
+            if cell_type == "identity":
+                cfg.prediction_network.rnn_cell = IdentityCell.default_config()
+            elif cell_type == "recurrence":
+                cfg.prediction_network.rnn_cell = SimpleRecurrentCell.default_config()
+            else:
+                raise ValueError(f"Unsupported cell_type = {cell_type}.")
+        cfg.prediction_network.emb_dim = emb_dim
+
+        if rnn_hidden_dim:
+            # LSTMCell.
+            cfg.prediction_network.rnn_cell.set(hidden_dim=rnn_hidden_dim)
+        if blank_logit_bias:
+            cfg.transducer.logits_to_log_probs.blank_logit_bias = blank_logit_bias
+
+        layer = cfg.instantiate(parent=None)  # type: TransducerDecoderModel
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(rng_seed)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        if cell_type:
+            layer_params["transducer"]["proj"]["weight"] = jnp.identity(cfg.joint_dim)
+        return cfg, layer, layer_params, prng_key
+
+    @parameterized.parameters(
+        # [batch_size, tgt_len].
+        (
+            jnp.array(
+                [
+                    [14, 8, 17, 19, 17, 2],  # length 5.
+                    [17, 4, 18, 2, -1, -1],  # length 3.
+                    [2, -1, -1, -1, -1, -1],  # length 0.
+                ]
+            ),
+            False,
+        ),
+        (jnp.array([[9, 11, 8, 5, 2, -1, -1, -1]]), True),
+    )
+    def test_forward(self, target_labels, tile_input):
+        """Tests that loss computation excludes empty sequence, and respects paddings."""
+        am_dim, bos_id = 8, 1
+        _, layer, layer_params, prng_key = self._set_up_transducer()
+
+        # Generate inputs.
+        if tile_input:
+            batch_size, src_len, max_src_len = 4, 5, 10
+            # [batch_size, src_len, am_dim].
+            inputs = jnp.tile(
+                jax.random.normal(jax.random.PRNGKey(707), [1, max_src_len, am_dim]) * 1000,
+                [batch_size, 1, 1],
+            )
+            paddings = jnp.tile(jnp.arange(max_src_len)[None, :] >= src_len, [batch_size, 1])
+            # Generate different padding data.
+            pad_inputs_data = (
+                jax.random.normal(jax.random.PRNGKey(124), [batch_size, max_src_len, am_dim]) * 2000
+            )
+            # Generate inputs with the same data at non-pad positions.
+            inputs = jnp.where(paddings[:, :, None], pad_inputs_data, inputs)
+            assert_allclose(
+                jnp.diff(inputs[:, :src_len], axis=0), jnp.zeros([batch_size - 1, src_len, am_dim])
+            )
+            target_labels = jnp.tile(target_labels, [batch_size, 1])
+        else:
+            batch_size = target_labels.shape[0]
+            max_src_len = 10
+            src_len = np.array([10, 0, 7])
+            # [batch_size, src_len, am_dim].
+            inputs = (
+                jax.random.normal(jax.random.PRNGKey(311), [batch_size, max_src_len, am_dim]) * 1000
+            )
+            paddings = jnp.arange(max_src_len)[None, :] >= src_len[:, None]
+
+        input_ids = jnp.concatenate(
+            [jnp.full([batch_size, 1], bos_id), target_labels[:, :-1]], axis=1
+        )
+
+        @jax.jit
+        def jit_forward(input_batch):
+            (loss, aux_outputs), _ = F(
+                layer,
+                inputs=dict(input_batch=input_batch),
+                is_training=True,
+                prng_key=prng_key,
+                state=layer_params,
+            )
+            return loss, aux_outputs
+
+        # Compute test loss.
+        loss, aux_outputs = jit_forward(
+            dict(
+                inputs=inputs,
+                paddings=paddings,
+                target_labels=target_labels,
+                target=dict(input_ids=input_ids),
+            )
+        )
+        assert_allclose(
+            loss,
+            (aux_outputs["per_example_loss"] * aux_outputs["per_example_weight"]).sum()
+            / jnp.sum(aux_outputs["per_example_weight"]),
+        )
+        if tile_input:
+            # The loss is the same for all examples in the batch.
+            assert_allclose(jnp.diff(aux_outputs["per_example_loss"]), jnp.zeros(batch_size - 1))
+            assert_allclose(aux_outputs["per_example_weight"], jnp.ones(batch_size))
+        else:
+            # Empty source example has weight 0.
+            expected_weight = jnp.array([1.0, 0.0, 1.0])
+            self.assertNestedEqual(aux_outputs["per_example_weight"], expected_weight)
+
+
+if __name__ == "__main__":
+    absltest.main()
